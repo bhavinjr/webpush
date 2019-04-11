@@ -4,6 +4,8 @@ namespace NotificationChannels\WebPush;
 
 use Minishlink\WebPush\WebPush;
 use Illuminate\Notifications\Notification;
+use convertifier\Models\NotificationLog;
+use convertifier\Models\Subscriber;
 
 class WebPushChannel
 {
@@ -28,43 +30,44 @@ class WebPushChannel
      */
     public function send($notifiable, Notification $notification)
     {
-        $subscriptions = $notifiable->routeNotificationFor('WebPush');
-
-        if (! $subscriptions || $subscriptions->isEmpty()) {
-            return;
-        }
-
         $payload = json_encode($notification->toWebPush($notifiable, $notification)->toArray());
+        $rawPublicKey  = str_replace(' ', '+', $notifiable->public_key);
 
-        $subscriptions->each(function ($sub) use ($payload) {
-            $this->webPush->sendNotification(
-                $sub->endpoint,
-                $payload,
-                $sub->public_key,
-                $sub->auth_token
-            );
-        });
+        $this->webPush->sendNotification(
+            $notifiable->browser_id,
+            $payload,
+            $rawPublicKey,
+            $notifiable->auth_token
+        );
 
         $response = $this->webPush->flush();
 
-        $this->deleteInvalidSubscriptions($response, $subscriptions);
+        $this->afterPush($notifiable);
+        $this->deleteInvalidSubscriptions($response, $notifiable);
     }
 
-    /**
-     * @param  array|bool $response
-     * @param  \Illuminate\Database\Eloquent\Collection $subscriptions
-     * @return void
-     */
-    protected function deleteInvalidSubscriptions($response, $subscriptions)
+    protected function afterPush($notifiable)
+    {
+        try {
+            NotificationLog::where('push_status', 0)
+                            ->where('id', $notifiable->id)
+                            ->update(['push_status' => 1]);
+        } catch (\Exception $ex) {
+            \Log::warning('warning '.$ex->getMessage());
+        }
+    }
+
+    protected function deleteInvalidSubscriptions($response, $notifiable)
     {
         if (! is_array($response)) {
             return;
         }
 
-        foreach ($response as $index => $value) {
-            if (! $value['success'] && isset($subscriptions[$index])) {
-                $subscriptions[$index]->delete();
-            }
+        try {
+            Subscriber::where('browser_id', $notifiable->browser_id)
+                        ->delete();
+        } catch (\Exception $ex) {
+            \Log::warning('warning '.$ex->getMessage());
         }
     }
 }
